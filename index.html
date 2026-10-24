@@ -284,11 +284,13 @@ footer{border-top:1px solid var(--line);padding:24px 0 36px;color:var(--muted);f
       <div id="adminLock">
         <p class="kicker">Studio</p>
         <h1 style="margin-top:10px;font-size:2.4rem">Admin only.</h1>
-        <p class="lede">Key unlocks free zip slots and paid premium songs.</p>
-        <label for="key">Studio key</label>
-        <input id="key" type="password" inputmode="numeric" maxlength="12" autocomplete="current-password">
-        <button type="button" class="btn gold full" id="unlockBtn">Unlock</button>
-        <p id="keyErr" class="err"></p>
+        <p class="lede">Sign in with your authorized administrator account.</p>
+        <label for="adminEmail">Administrator email</label>
+        <input id="adminEmail" type="email" maxlength="254" autocomplete="username" required>
+        <label for="adminPassword">Password</label>
+        <input id="adminPassword" type="password" maxlength="256" autocomplete="current-password" required>
+        <button type="button" class="btn gold full" id="unlockBtn">Sign in</button>
+        <p id="keyErr" class="err" role="status" aria-live="polite"></p>
       </div>
 
       <div id="adminDesk" hidden>
@@ -300,8 +302,9 @@ footer{border-top:1px solid var(--line);padding:24px 0 36px;color:var(--muted);f
           <p class="kicker">New free zip</p>
           <label for="zipTitle">Pack name</label>
           <input id="zipTitle" type="text" maxlength="80" placeholder="e.g. Free style pack 01">
-          <label for="zipUrl">Zip insert link</label>
-          <input id="zipUrl" type="url" maxlength="1800" placeholder="Paste direct .zip link">
+          <label for="zipFile">ZIP file</label>
+          <input id="zipFile" type="file" accept=".zip,application/zip,application/x-zip-compressed">
+          <p class="hint">ZIP files only · maximum 50 MB. Uploads are published as free downloads.</p>
           <div class="row-actions">
             <button type="button" class="btn gold" id="saveZipBtn">Save zip</button>
             <button type="button" class="ghost-btn" id="cancelZipBtn">Cancel</button>
@@ -351,17 +354,26 @@ footer{border-top:1px solid var(--line);padding:24px 0 36px;color:var(--muted);f
   </div>
 </footer>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 const MODELS = {"roland": ["Roland E-09", "Roland E-16", "Roland E-28", "Roland E-35", "Roland E-36", "Roland E-38", "Roland E-40", "Roland E-50", "Roland E-60", "Roland E-66", "Roland E-68", "Roland E-70", "Roland E-80", "Roland E-A7", "Roland E-X10", "Roland E-X20", "Roland E-X20A", "Roland E-X30", "Roland E-X50", "Roland BK-3", "Roland BK-5", "Roland BK-7m", "Roland BK-9", "Roland G-70", "Roland G-800", "Roland G-1000"], "korg": ["KORG Pa50", "KORG Pa50SD", "KORG Pa55", "KORG Pa500", "KORG Pa600", "KORG Pa700", "KORG Pa800", "KORG Pa900", "KORG Pa1000", "KORG Pa1X", "KORG Pa2X Pro", "KORG Pa3X", "KORG Pa3X Le", "KORG Pa4X", "KORG Pa5X", "KORG i3", "KORG i30", "KORG i40M", "KORG iS40", "KORG iS50", "KORG EK-50", "KORG EK-50 Limitless", "KORG microARRANGER"], "yamaha": {"PSR-I Series": ["PSR-I300", "PSR-I400", "PSR-I425", "PSR-I455", "PSR-I500", "PSR-I510", "PSR-I610"], "PSR-E Series": ["PSR-E303", "PSR-E313", "PSR-E323", "PSR-E333", "PSR-E343", "PSR-E353", "PSR-E363", "PSR-E373", "PSR-E383", "PSR-E403", "PSR-E413", "PSR-E423", "PSR-E433", "PSR-E443", "PSR-E453", "PSR-E463", "PSR-E473", "PSR-E483"], "PSR-EW Series": ["PSR-EW300", "PSR-EW310", "PSR-EW400", "PSR-EW410", "PSR-EW425"], "PSR-S Series": ["PSR-S550", "PSR-S650", "PSR-S670", "PSR-S700", "PSR-S710", "PSR-S750", "PSR-S770", "PSR-S775", "PSR-S900", "PSR-S910", "PSR-S950", "PSR-S970", "PSR-S975"], "PSR-SX Series": ["PSR-SX600", "PSR-SX700", "PSR-SX720", "PSR-SX720+", "PSR-SX900", "PSR-SX920"], "PSR-A Series": ["PSR-A2000", "PSR-A3000", "PSR-A350", "PSR-A5000"], "Tyros Series": ["Tyros", "Tyros 2", "Tyros 3", "Tyros 4", "Tyros 5"], "Genos Series": ["Genos", "Genos2"]}};
 const WA = "918825402718";
-const KEY = "882540";
 const SONG_STORE = "zstudio-songs-v2";
-const ZIP_STORE = "zstudio-zips-v1";
 const EMPTY_ZIP_SLOTS = 3;
+
+// Replace these two placeholders with the Project URL and publishable key from Supabase.
+// The publishable/anon key is intended for browser use. NEVER put a service_role/secret key here.
+const SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "YOUR_SUPABASE_PUBLISHABLE_KEY";
+const ZIP_BUCKET = "zstudio-free-zips";
+const ZIP_TABLE = "zstudio_zip_packs";
+const MAX_ZIP_BYTES = 50 * 1024 * 1024;
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 let brand = null;
 let pickedModel = "";
 let unlocked = false;
+let zipCache = [];
 
 const $ = (id) => document.getElementById(id);
 
@@ -397,14 +409,37 @@ function saveSongs(list) {
   renderSongs();
   if (unlocked) renderEditors();
 }
-function loadZips() {
-  try { return JSON.parse(localStorage.getItem(ZIP_STORE) || "[]"); }
-  catch { return []; }
+async function loadZipPacks() {
+  const box = $("zipList");
+  try {
+    const { data, error } = await sb.from(ZIP_TABLE)
+      .select("id,title,storage_path,created_at")
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    zipCache = data || [];
+    renderZips();
+    if (unlocked) renderZipEditors();
+  } catch (error) {
+    console.error("Unable to load ZIP packs:", error);
+    box.innerHTML = '<div class="empty">ZIP packs could not load. Please try again later.</div>';
+  }
 }
-function saveZips(list) {
-  localStorage.setItem(ZIP_STORE, JSON.stringify(list));
-  renderZips();
-  if (unlocked) renderZipEditors();
+
+function publicZipUrl(storagePath) {
+  const { data } = sb.storage.from(ZIP_BUCKET).getPublicUrl(storagePath);
+  return data.publicUrl;
+}
+
+function safeZipName(name) {
+  return (name || "pack.zip").split(/[\/]/).pop().replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "pack.zip";
+}
+
+async function fileLooksLikeZip(file) {
+  const bytes = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  return bytes.length === 4 && bytes[0] === 0x50 && bytes[1] === 0x4b &&
+    ((bytes[2] === 0x03 && bytes[3] === 0x04) ||
+     (bytes[2] === 0x05 && bytes[3] === 0x06) ||
+     (bytes[2] === 0x07 && bytes[3] === 0x08));
 }
 
 function youtubeId(raw) {
@@ -507,7 +542,7 @@ function modelBtn(m) {
 }
 
 function renderZips() {
-  const live = loadZips().filter((z) => (z.title || "").trim() && (z.url || "").trim());
+  const live = zipCache.filter((z) => (z.title || "").trim() && (z.storage_path || "").trim());
   const empties = Math.max(EMPTY_ZIP_SLOTS - live.length, live.length ? 0 : EMPTY_ZIP_SLOTS);
   const box = $("zipList");
   box.innerHTML = "";
@@ -518,8 +553,7 @@ function renderZips() {
     card.querySelector("h3").textContent = z.title;
     const a = document.createElement("a");
     a.className = "btn gold";
-    a.href = z.url;
-    a.target = "_blank";
+    a.href = publicZipUrl(z.storage_path) + "?download";
     a.rel = "noopener";
     a.textContent = "Download zip";
     a.style.marginTop = "8px";
@@ -575,23 +609,62 @@ function renderSongs() {
   });
 }
 
-$("unlockBtn").onclick = () => {
-  if ($("key").value.trim() === KEY) {
-    unlocked = true;
-    $("adminLock").hidden = true;
-    $("adminDesk").hidden = false;
-    $("keyErr").textContent = "";
-    $("addForm").hidden = true;
-    $("zipForm").hidden = true;
-    renderEditors();
-    renderZipEditors();
-  } else $("keyErr").textContent = "Wrong studio key.";
+async function showAdminDesk() {
+  unlocked = true;
+  $("adminLock").hidden = true;
+  $("adminDesk").hidden = false;
+  $("keyErr").textContent = "";
+  $("addForm").hidden = true;
+  $("zipForm").hidden = true;
+  renderEditors();
+  await loadZipPacks();
+  renderZipEditors();
+}
+
+async function checkAdminSession() {
+  try {
+    const { data: { session }, error } = await sb.auth.getSession();
+    if (error) throw error;
+    if (!session) return;
+    const { data: isAdmin, error: adminError } = await sb.rpc("is_zstudio_admin");
+    if (adminError) throw adminError;
+    if (isAdmin === true) await showAdminDesk();
+    else await sb.auth.signOut();
+  } catch (error) {
+    console.error("Admin session check failed:", error);
+    $("keyErr").textContent = "Could not verify admin access. Check Supabase configuration.";
+  }
+}
+
+$("unlockBtn").onclick = async () => {
+  const email = $("adminEmail").value.trim();
+  const password = $("adminPassword").value;
+  $("keyErr").textContent = "";
+  if (!email || !password) {
+    $("keyErr").textContent = "Enter your administrator email and password.";
+    return;
+  }
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) {
+    $("keyErr").textContent = "Sign-in failed. Check your credentials.";
+    return;
+  }
+  const { data: isAdmin, error: adminError } = await sb.rpc("is_zstudio_admin");
+  if (adminError || isAdmin !== true) {
+    await sb.auth.signOut();
+    $("keyErr").textContent = "This account is not authorized as a Z-Studio administrator.";
+    return;
+  }
+  $("adminPassword").value = "";
+  await showAdminDesk();
 };
-$("lockBtn").onclick = () => {
+
+$("lockBtn").onclick = async () => {
   unlocked = false;
+  await sb.auth.signOut();
   $("adminDesk").hidden = true;
   $("adminLock").hidden = false;
-  $("key").value = "";
+  $("adminPassword").value = "";
   $("addForm").hidden = true;
   $("zipForm").hidden = true;
 };
@@ -599,55 +672,76 @@ $("lockBtn").onclick = () => {
 $("addZipBtn").onclick = () => {
   $("zipForm").hidden = false;
   $("zipTitle").value = "";
-  $("zipUrl").value = "";
+  $("zipFile").value = "";
   $("zipErr").textContent = "";
   $("zipTitle").focus();
 };
 $("cancelZipBtn").onclick = () => { $("zipForm").hidden = true; };
-$("saveZipBtn").onclick = () => {
+$("saveZipBtn").onclick = async () => {
+  if (!unlocked) { $("zipErr").textContent = "Sign in as administrator first."; return; }
   const title = $("zipTitle").value.trim();
-  let url = $("zipUrl").value.trim();
+  const file = $("zipFile").files[0];
   if (!title) { $("zipErr").textContent = "Enter the pack name."; return; }
-  if (!url) { $("zipErr").textContent = "Paste the zip insert link."; return; }
-  try { url = normalizeUrl(url); }
-  catch (e) { $("zipErr").textContent = e.message; return; }
-  const list = loadZips();
-  list.push({ id: crypto.randomUUID(), title, url });
-  saveZips(list);
-  $("zipForm").hidden = true;
+  if (!file) { $("zipErr").textContent = "Choose a ZIP file."; return; }
+  if (!file.name.toLowerCase().endsWith(".zip")) { $("zipErr").textContent = "Only .zip files are allowed."; return; }
+  if (file.size <= 0 || file.size > MAX_ZIP_BYTES) { $("zipErr").textContent = "ZIP files must be smaller than or equal to 50 MB."; return; }
+  $("saveZipBtn").disabled = true;
+  $("zipErr").textContent = "Checking and uploading ZIP…";
+  let storagePath = "";
+  try {
+    if (!(await fileLooksLikeZip(file))) throw new Error("The file does not look like a valid ZIP archive.");
+    storagePath = "packs/" + crypto.randomUUID() + "-" + safeZipName(file.name);
+    const { error: uploadError } = await sb.storage.from(ZIP_BUCKET).upload(storagePath, file, {
+      cacheControl: "3600", contentType: "application/zip", upsert: false
+    });
+    if (uploadError) throw uploadError;
+    const { error: insertError } = await sb.from(ZIP_TABLE).insert({ title, storage_path: storagePath });
+    if (insertError) {
+      await sb.storage.from(ZIP_BUCKET).remove([storagePath]);
+      throw insertError;
+    }
+    $("zipForm").hidden = true;
+    await loadZipPacks();
+    $("zipErr").textContent = "";
+  } catch (error) {
+    console.error("ZIP upload failed:", error);
+    $("zipErr").textContent = error.message || "Upload failed. Check your connection and permissions.";
+  } finally {
+    $("saveZipBtn").disabled = false;
+  }
 };
 
 function renderZipEditors() {
   const box = $("zipEditorList");
   box.innerHTML = "";
-  const list = loadZips();
-  if (!list.length) {
-    box.innerHTML = '<div class="empty">No zips yet. Tap + Add zip slot, then save title + link.</div>';
+  if (!zipCache.length) {
+    box.innerHTML = '<div class="empty">No ZIP packs yet. Tap + Add zip slot to upload the first pack.</div>';
     return;
   }
-  list.forEach((z, idx) => {
+  zipCache.forEach((z, idx) => {
     const el = document.createElement("div");
     el.className = "song-edit";
-    el.innerHTML =
-      '<p class="kicker">Zip ' + String(idx+1).padStart(2,"0") + (z.title && z.url ? " · Live" : "") + '</p>' +
+    el.innerHTML = '<p class="kicker">Free ZIP ' + String(idx+1).padStart(2,"0") + ' · Live</p>' +
       '<label>Pack name</label><input type="text" class="t" maxlength="80">' +
-      '<label>Zip insert link</label><input type="url" class="u" maxlength="1800">' +
-      '<div class="row-actions"><button type="button" class="btn gold save">Save</button><button type="button" class="ghost-btn del">Remove</button></div><p class="hint st"></p>';
+      '<div class="row-actions"><button type="button" class="btn gold save">Save name</button><button type="button" class="ghost-btn del">Delete ZIP</button></div><p class="hint st"></p>';
     el.querySelector(".t").value = z.title || "";
-    el.querySelector(".u").value = z.url || "";
-    el.querySelector(".save").onclick = () => {
+    el.querySelector(".save").onclick = async () => {
       const title = el.querySelector(".t").value.trim();
-      let url = el.querySelector(".u").value.trim();
-      if (!title || !url) { el.querySelector(".st").textContent = "Need pack name and zip link."; return; }
-      try { url = normalizeUrl(url); } catch (e) { el.querySelector(".st").textContent = e.message; return; }
-      const next = loadZips();
-      next[idx] = { ...next[idx], title, url };
-      saveZips(next);
-      el.querySelector(".st").textContent = "Saved on Free Plays.";
+      const status = el.querySelector(".st");
+      if (!title) { status.textContent = "Enter a pack name."; return; }
+      const { error } = await sb.from(ZIP_TABLE).update({ title }).eq("id", z.id);
+      if (error) { status.textContent = "Could not save the name. Check permissions."; return; }
+      status.textContent = "Saved.";
+      await loadZipPacks();
     };
-    el.querySelector(".del").onclick = () => {
-      if (!confirm("Remove this zip slot?")) return;
-      saveZips(loadZips().filter((_, i) => i !== idx));
+    el.querySelector(".del").onclick = async () => {
+      if (!confirm("Delete this public free ZIP permanently?")) return;
+      const status = el.querySelector(".st");
+      const { error: deleteRowError } = await sb.from(ZIP_TABLE).delete().eq("id", z.id);
+      if (deleteRowError) { status.textContent = "Could not delete the listing."; return; }
+      const { error: deleteFileError } = await sb.storage.from(ZIP_BUCKET).remove([z.storage_path]);
+      if (deleteFileError) console.error("Listing deleted but file cleanup failed:", deleteFileError);
+      await loadZipPacks();
     };
     box.appendChild(el);
   });
@@ -713,6 +807,8 @@ function renderEditors() {
 renderZips();
 renderSongs();
 refreshWA();
+loadZipPacks();
+checkAdminSession();
 
 (function(){
   const splash = document.getElementById("splash");
